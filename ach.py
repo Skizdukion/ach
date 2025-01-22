@@ -7,7 +7,6 @@ from collections import defaultdict, deque
 from torch.distributions import Categorical
 import random
 import numpy as np
-import torch.optim as optim
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -127,7 +126,6 @@ class ACH:
         self.l_thresh = l_thresh
         self.entropy_beta = entropy_beta
         self.alpha = alpha
-        self.optimizer = optim.Adam(mlp.parameters(), lr=3e-4)
 
     def train(self, train_length):
         for train_i in range(1, train_length + 1):
@@ -149,7 +147,7 @@ class ACH:
                 returns.view(-1),
             )
 
-            for train_in_i in range(self.learn_each_train):
+            for _ in range(self.learn_each_train):
                 mini_batch = self.replay_buffer.sample(64)
 
                 # Reset Lsum for each mini-batch
@@ -190,20 +188,21 @@ class ACH:
                     )
 
                 # Backpropagate the accumulated loss for the mini-batch
-                self.optimizer.zero_grad()
+                self.learners[-1].optimizer.zero_grad()
                 torch.stack(losses).sum().backward(
                     retain_graph=True
                 )  # Compute gradients properly
-                self.optimizer.step()
+                self.learners[-1].optimizer.step()
 
                 del losses, loss_policy, loss_value, loss_entropy
 
                 if DEVICE == "cuda":
                     torch.cuda.empty_cache()
 
-            if train_i % 50:
-                print("Trainning checkpoint, Exploitability: ")
-                print(self.calculate_exploitability())
+            if train_i % 5 == 0:
+                print(
+                    f"Trainning checkpoint {train_i}, Exploitability: {self.calculate_exploitability()}"
+                )
 
     def self_play(self):
         s_states = torch.zeros(
@@ -243,7 +242,6 @@ class ACH:
 
             for i in range(len(futures)):
                 next_states = futures[i].result()
-                print(next_states)
                 s_next_states[i] = next_states
 
         return TrajectorySegment(
@@ -289,14 +287,12 @@ class ACH:
                     is_new_game,
                 )
 
+            cur_player_index += 1
             if is_new_game:
                 opp = self.random_opp()
-                cur_player_index += (
-                    1  # Do this to mix learners in second position of the game
-                )
+                cur_player_index = random.randint(0, 1)
 
             cur_state = next_state
-            cur_player_index += 1
 
         return self.env.encoded_single_state(cur_state)
 
@@ -400,16 +396,26 @@ class ACH:
             while not done:
                 if self.env.current_player == player:
                     # Best response: choose the action that maximizes expected value
-                    _, probs = self.learners[-1].get_policy(self.env.encoded_single_state(state))
+                    _, probs = self.learners[-1].get_policy(
+                        self.env.encoded_single_state(state)
+                    )
                     action = torch.argmax(probs).item()  # Greedy best response
                 else:
                     # Opponent plays according to the current policy
-                    _, probs = self.learners[-1].get_policy(self.env.encoded_single_state(state))
+                    _, probs = self.learners[-1].get_policy(
+                        self.env.encoded_single_state(state)
+                    )
                     action = Categorical(probs).sample().item()
 
                 next_state, reward, done = self.env.step(action)
-                if self.env.current_player == player:
-                    total_value += -reward  # Only count rewards for the best response player
+
+                if done:
+                    # Next turn is player, so current reward is opp
+                    if self.env.current_player == player:
+                        total_value -= reward
+                    else:
+                        total_value += reward
+
                 state = next_state
 
         # Normalize by the number of games
@@ -419,7 +425,9 @@ class ACH:
 if __name__ == "__main__":
     env = KuhnPokerEnv(verbose=False)
     mlp = Mlp(env.encode_state_size, env.num_actions, DEVICE)
+    # mlp.load("ach_checkpoint.pth")
     ach = ACH(env, mlp)
-    ach.train(200)
+    ach.train(100)
+    # mlp.save("ach_checkpoint.pth")
     # for i in range(5):
     #     print("Exploitability: " + str(ach.calculate_exploitability()))

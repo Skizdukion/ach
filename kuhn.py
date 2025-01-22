@@ -52,7 +52,8 @@ class KuhnPokerEnv:
             if len(history) > 0:
                 # Convert actions to indices
                 history_indices = torch.tensor(
-                    [self.action_value_map[action] for action in history], dtype=torch.long
+                    [self.action_value_map[action] for action in history],
+                    dtype=torch.long,
                 ).unsqueeze(
                     0
                 )  # Shape: (1, len(history))
@@ -111,9 +112,19 @@ class KuhnPokerEnv:
             raise Exception("Invalid action")
 
         self.history += action  # Append 'p' for pass, 'b' for bet
+
+        # Check if the game is over
         if len(self.history) >= 2:
-            reward = self.calculate_reward()
-            return self.get_state(), reward, True
+            # If the history is "pp", "pb", "bp", or "bb", the game is over
+            if self.history in ["pp", "bp", "bb"]:
+                reward = self.calculate_reward()
+                return self.get_state(), reward, True
+            # If the history is "pbb" or "pbp", the game is also over
+            elif self.history in ["pbb", "pbp"]:
+                reward = self.calculate_reward()
+                return self.get_state(), reward, True
+
+        # Switch players if the game is not over
         self.current_player = 1 - self.current_player
         return self.get_state(), 0, False
 
@@ -123,12 +134,19 @@ class KuhnPokerEnv:
             print(f"Player Cards: {self.player_cards}")
 
         if self.history == "pp":
+            # Both players pass, the higher card wins 1
             reward = 1 if self.player_cards[0] > self.player_cards[1] else -1
-        elif self.history == "pb":
+        elif self.history == "pbp":
+            # Player 1 passes, Player 2 bets, Player 1 folds, Player 2 wins 1
             reward = -1
         elif self.history == "bp":
+            # Player 1 bets, Player 2 passes, Player 1 wins 1
             reward = 1
         elif self.history == "bb":
+            # Both players bet, the higher card wins 2
+            reward = 2 if self.player_cards[0] > self.player_cards[1] else -2
+        elif self.history == "pbb":
+            # Player 1 passes, Player 2 bets, Player 1 calls, the higher card wins 2
             reward = 2 if self.player_cards[0] > self.player_cards[1] else -2
         else:
             reward = 0  # Handle unexpected cases
